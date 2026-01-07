@@ -2,11 +2,13 @@
 
 An AI-powered sales automation agent that identifies stale deals and generates personalized follow-up emails by researching prospects across multiple data sources.
 
+> ⚠️ **Note**: This agent requires customization before use. The AI prompts are currently configured for a specific product. See the [Customize AI Prompts](#customize-ai-prompts-required) section to adapt it for your product/service.
+
 ## Features
 
 - **CRM Integration**: Queries HubSpot for deals in specific pipeline stages
 - **Multi-Source Research**: Gathers context from:
-  - 📧 HubSpot emails and notes
+  - 📧 HubSpot emails and notes from Contact, Deal & Account objects
   - 💬 Slack internal discussions
   - 📞 Fireflies call transcripts
   - 🌐 Web search for company news & AI initiatives
@@ -39,7 +41,7 @@ An AI-powered sales automation agent that identifies stale deals and generates p
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/sales-followup-agent.git
+git clone https://github.com/sneurgaonkar/sales-followup-agent.git
 cd sales-followup-agent
 ```
 
@@ -260,12 +262,54 @@ SLACK_CHANNELS=sales,marketing,support,deals
 DIGEST_RECIPIENTS=user1@example.com,user2@example.com,team@example.com
 ```
 
-### Customize the AI Prompt
+### Customize AI Prompts (Required)
 
-Modify the `generate_followup_email()` function in `followup_agent.py` to adjust:
-- Email tone and style
-- Product capabilities to reference
-- Email structure and length
+⚠️ **Important**: The default prompts are configured for a specific product (Adopt AI). You **must** customize these for your own product/service.
+
+#### 1. Email Generation Prompt
+
+Edit the `generate_followup_email()` function in `followup_agent.py` (~line 600). Update:
+
+- **Role & Purpose**: Change the AI's role description to match your sales context
+- **Product Capabilities**: Replace the "Current Capabilities" section with your product's features
+- **Email Scenarios**: Adjust the email templates for your typical sales situations
+- **Tone Guidelines**: Modify to match your brand voice
+
+```python
+# Look for this section in generate_followup_email():
+prompt = f"""You are a senior sales development representative...
+
+# Update the "Current Capabilities" section:
+## Current [Your Product] Capabilities
+- Feature 1: Description
+- Feature 2: Description
+...
+```
+
+#### 2. Web Search Prompt
+
+Edit the `search_company_news()` function in `followup_agent.py` (~line 550). Update the search query to focus on signals relevant to your product:
+
+```python
+# Current prompt searches for AI-related news
+# Change to match your product's value proposition:
+messages=[{
+    "role": "user", 
+    "content": f"Search for recent news about {company_name} related to [your relevant topics]. "
+               f"Focus on: [signals that indicate buying intent for your product]..."
+}]
+```
+
+#### 3. What to Customize
+
+| Section | What to Change |
+|---------|----------------|
+| Product name | Replace "Adopt AI" with your product |
+| Capabilities | List your product's features and benefits |
+| Use cases | Describe how customers use your product |
+| Search topics | What news signals buying intent for you? |
+| Email tone | Match your brand voice and sales style |
+| Talking points | Customize for your typical objections |
 
 ## Sample Output
 
