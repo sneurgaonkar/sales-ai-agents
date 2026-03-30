@@ -39,6 +39,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# Generated digest outputs
+deal_summary_*.html
+followup_digest_*.html
+
 # Logs and lead finder output
 *.log
 cron.log

@@ -15,6 +15,9 @@ Finds **high-engagement Marketing Contacts** without deals, generates outreach e
 ### 3. CSV Outreach Email Generator (`csv_outreach_emails.py`)
 Reads a **CSV of contacts** (for example from events or list uploads), automatically detects column headers, optionally enriches contacts via **Apollo**, pulls context from the shared **ChromaDB knowledge base**, and can use **Parallel.ai web search** for extra context. Generates **short, personalized LinkedIn InMail-style messages** (around 80 words) for each row and outputs either JSON or a new CSV with an `email_body` column.
 
+### 4. Executive Summary Agent (`executive_summary_agent.py`)
+Runs daily (e.g. every evening) to build an **executive deal pipeline summary**. Fetches all active deals in configured stages (e.g. Potential Fit, Proposal Sent, Negotiation, Contract), gathers context per deal (contact, company, last email, last note, days since activity), and uses Claude to generate a **4–6 sentence executive summary** per deal. Sends a single HTML digest grouped by stage to `EXECUTIVE_SUMMARY_RECIPIENTS`. No stale filter — every deal in those stages is included.
+
 ## Features
 
 ### Follow-up Agent
@@ -50,6 +53,13 @@ Reads a **CSV of contacts** (for example from events or list uploads), automatic
 - **Shared Knowledge Base**: Reuses the same ChromaDB knowledge base as the other agents (via `index_knowledge_base.py`) to pull relevant capabilities, use cases, and persona messaging.
 - **Optional Web Search**: When `PARALLEL_API_KEY` is set, calls the Parallel.ai Search API to add recent company or industry context.
 - **Compact InMail Messages**: Generates a single **≈80-word LinkedIn InMail body** per contact, designed for quick follow-up after events like Manifest – Supply Chain Conference.
+
+### Executive Summary Agent
+- **Pipeline-Wide View**: Fetches all deals in configured stages (Potential Fit, Proposal Sent, Negotiation, Contract) with no stale filter
+- **Context per Deal**: Deal name, stage, value, owner; contact (name, title, email); company (name, industry, size); last email date and subject; last note; days since last activity
+- **AI Summaries**: Claude (claude-3-5-sonnet) generates a 4–6 sentence paragraph per deal: who they are, stage/value, last interaction, health (healthy/progressing/stuck), and one recommended next action
+- **HTML Digest**: Single email grouped by stage with professional styling; stage badges (e.g. Potential Fit = yellow, Contract = green); each deal shows an AI summary box
+- **Scheduling**: Intended to run daily (e.g. 6:00 PM IST); cron or GitHub Actions
 
 ## How It Works
 
@@ -179,6 +189,9 @@ python followup_agent.py
 # Run the Lead Finder Agent (for high-engagement contacts)
 python lead_finder_agent.py
 
+# Run the Executive Summary Agent (evening pipeline digest)
+python executive_summary_agent.py
+
 # Run the CSV Outreach Email Generator (for CSV contact lists)
 python csv_outreach_emails.py path/to/contacts.csv
 # Optional flags:
@@ -193,7 +206,11 @@ python csv_outreach_emails.py path/to/contacts.csv
 ### 5. Test with a Single Deal (Optional)
 
 ```bash
+# Follow-up agent: test one deal
 python test_single_deal.py "Deal Name"
+
+# Executive Summary agent: test one deal (generates summary only, no email)
+python test_executive_summary.py "Deal Name"
 ```
 
 ### 6. Set Up Knowledge Base (Optional)
@@ -229,15 +246,15 @@ pypdf>=3.0.0              # For PDF document loading
 
 ### API Keys & Tokens
 
-| Service | Follow-up Agent | Lead Finder Agent | CSV Outreach Emails | Purpose |
-|---------|-----------------|-------------------|----------------------|---------|
-| [Anthropic](https://console.anthropic.com/) | ✅ Required | ✅ Required | ✅ Required | Claude AI for email / InMail generation |
-| [HubSpot](https://developers.hubspot.com/) | ✅ Required | ✅ Required | ❌ Not used | CRM data (deals, contacts, companies) |
-| [SendGrid](https://sendgrid.com/) | ✅ Required | ✅ Required | ❌ Not used | Email delivery |
-| [Slack](https://api.slack.com/) | ❌ Optional | ❌ Optional | ❌ Not used | Internal discussion search |
-| [Fireflies.ai](https://fireflies.ai/) | ❌ Optional | ❌ Optional | ❌ Not used | Call transcript search |
-| [Apollo.io](https://www.apollo.io/) | ❌ Not used | ❌ Optional | ❌ Optional | Contact/company enrichment |
-| [Parallel.ai](https://parallel.ai/) | ❌ Not used | ❌ Not used | ❌ Optional | Web search enrichment for companies |
+| Service | Follow-up Agent | Lead Finder Agent | Executive Summary | CSV Outreach Emails | Purpose |
+|---------|-----------------|-------------------|-------------------|----------------------|---------|
+| [Anthropic](https://console.anthropic.com/) | ✅ Required | ✅ Required | ✅ Required | ✅ Required | Claude AI for email / InMail / summary generation |
+| [HubSpot](https://developers.hubspot.com/) | ✅ Required | ✅ Required | ✅ Required | ❌ Not used | CRM data (deals, contacts, companies) |
+| [SendGrid](https://sendgrid.com/) | ✅ Required | ✅ Required | ✅ Required | ❌ Not used | Email delivery |
+| [Slack](https://api.slack.com/) | ❌ Optional | ❌ Optional | ❌ Not used | ❌ Not used | Internal discussion search |
+| [Fireflies.ai](https://fireflies.ai/) | ❌ Optional | ❌ Optional | ❌ Not used | ❌ Not used | Call transcript search |
+| [Apollo.io](https://www.apollo.io/) | ❌ Not used | ❌ Optional | ❌ Not used | ❌ Optional | Contact/company enrichment |
+| [Parallel.ai](https://parallel.ai/) | ❌ Not used | ❌ Not used | ❌ Not used | ❌ Optional | Web search enrichment for companies |
 
 ## Configuration
 
@@ -318,6 +335,29 @@ TARGET_LIFECYCLE_STAGES=lead,marketingqualifiedlead
 # Number of top leads per run (split evenly between recipients; e.g. 10 → 5 each)
 TOP_LEADS_COUNT=10
 ```
+
+### Executive Summary Agent Configuration
+
+```bash
+# Digest recipients for the evening pipeline summary
+EXECUTIVE_SUMMARY_RECIPIENTS=email1@company.com,email2@company.com
+
+# HubSpot deal stage IDs (same order as SUMMARY_STAGE_LABELS)
+# Find IDs: HubSpot Settings → Objects → Deals → Pipelines
+SUMMARY_STAGES=stage_id_1,stage_id_2,stage_id_3,stage_id_4
+
+# Display names for each stage (same order as SUMMARY_STAGES)
+SUMMARY_STAGE_LABELS=Potential Fit,Proposal Sent,Negotiation,Contract
+
+# Email subject; {date} is replaced with today's date (e.g. 2025-03-17)
+EXECUTIVE_SUMMARY_SUBJECT=Daily Deal Pipeline Summary — {date}
+
+# HubSpot account ID (numeric) for "Open deal in HubSpot" links in the digest
+# Find it in the URL when logged in: app.hubspot.com/contacts/{PORTAL_ID}/...
+HUBSPOT_PORTAL_ID=12345678
+```
+
+Recommended: run daily at 6:00 PM IST (cron: `30 12 * * *` in UTC).
 
 ## Integration Setup
 
@@ -619,20 +659,22 @@ The daily digest email includes:
 ## Project Structure
 
 ```
-sales-followup-agent/
-├── followup_agent.py        # Follow-up Agent (stale deals) - uses RAG
-├── lead_finder_agent.py     # Lead Finder Agent (high-engagement contacts) - uses RAG
-├── test_single_deal.py      # Test script for single deal - uses RAG
-├── index_knowledge_base.py  # Knowledge base indexer (shared by all agents)
-├── requirements.txt         # Python dependencies
-├── .env.example             # Environment template
-├── .env                     # Your configuration (gitignored)
-├── docs/                    # Knowledge base documents (gitignored)
-│   ├── capabilities/        # Product features and capabilities
-│   ├── use-cases/           # Industry-specific use cases
-│   ├── personas/            # Messaging for different job titles
-│   └── case-studies/        # Customer success stories
-├── .chroma/                 # ChromaDB vector database (gitignored)
+sales-ai-agents/
+├── followup_agent.py           # Follow-up Agent (stale deals) - uses RAG
+├── lead_finder_agent.py        # Lead Finder Agent (high-engagement contacts) - uses RAG
+├── executive_summary_agent.py  # Executive Summary Agent (evening pipeline digest)
+├── test_single_deal.py         # Test script for follow-up (single deal)
+├── test_executive_summary.py   # Test script for executive summary (single deal)
+├── index_knowledge_base.py     # Knowledge base indexer (shared by agents)
+├── requirements.txt            # Python dependencies
+├── .env.example                # Environment template
+├── .env                        # Your configuration (gitignored)
+├── docs/                       # Knowledge base documents (gitignored)
+│   ├── capabilities/           # Product features and capabilities
+│   ├── use-cases/              # Industry-specific use cases
+│   ├── personas/               # Messaging for different job titles
+│   └── case-studies/           # Customer success stories
+├── .chroma/                    # ChromaDB vector database (gitignored)
 └── README.md
 ```
 
