@@ -27,6 +27,7 @@ Optional Environment Variables:
     SLACK_BOT_TOKEN - Slack Bot OAuth token for searching internal discussions
     SLACK_CHANNELS - Comma-separated list of Slack channels to search (default: sales,marketing)
     FIREFLIES_API_KEY - Fireflies.ai API key for searching call transcripts
+    PARALLEL_API_KEY - Parallel.ai API key for company web intelligence search
     STALE_THRESHOLD_DAYS - Days since last email to consider a deal stale (default: 14)
     SMTP_HOST - SMTP server host (if not using SendGrid)
     SMTP_PORT - SMTP server port
@@ -88,6 +89,10 @@ SLACK_CHANNELS = [
     for channel in os.getenv("SLACK_CHANNELS", DEFAULT_SLACK_CHANNELS).split(",") 
     if channel.strip()
 ]
+
+# Optional web search (Parallel.ai Search API)
+PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
+PARALLEL_SEARCH_HEADERS = {"parallel-beta": "search-extract-2025-10-10"}
 
 
 class HubSpotClient:
@@ -752,66 +757,48 @@ def is_deal_stale(last_email_date: Optional[datetime], threshold_days: int = STA
     return last_email_date < cutoff
 
 
-def search_company_news(client: anthropic.Anthropic, company_name: str) -> str:
-    """Use Claude's web search to find relevant news about the company.
-    
-    Searches for AI initiatives, leadership hires, technology investments,
-    and other news relevant for B2B sales outreach.
-    
-    Note: Web search must be enabled in your Anthropic Console at
-    https://console.anthropic.com/settings/organization/features
-    """
+def search_company_news(company_name: str, parallel_api_key: str, max_results: int = 3) -> str:
+    """Search company intelligence via Parallel.ai Search API."""
     if not company_name or company_name == "Unknown Company":
         return "No company name available for web search."
-    
-    try:
-        response = client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1024,
-            tools=[{
-                "type": "web_search_20250305",
-                "name": "web_search",
-                "max_uses": 3
-            }],
-            messages=[{
-                "role": "user",
-                "content": f"""Search for recent news about "{company_name}" related to:
-- AI initiatives or investments
-- New AI/ML leadership hires (CTO, CDO, VP of AI, etc.)
-- Digital transformation projects
-- Technology partnerships or vendor selections
-- Recent funding, acquisitions, or growth announcements
-- Strategic initiatives that might benefit from AI agents
+    if not parallel_api_key:
+        return "Web search not configured (PARALLEL_API_KEY not set)."
 
-Return a brief, bullet-pointed summary of the most relevant findings for a B2B sales context. 
-Focus on information that would be useful for selling an AI agent platform.
-If no relevant news is found, say so briefly."""
-            }]
+    objective = (
+        f'{company_name} AI initiatives leadership hires digital transformation '
+        f'technology partnerships funding acquisitions strategic priorities'
+    )
+
+    try:
+        response = requests.post(
+            PARALLEL_SEARCH_URL,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": parallel_api_key,
+                **PARALLEL_SEARCH_HEADERS,
+            },
+            json={
+                "objective": objective,
+                "search_queries": [objective],
+                "max_results": max_results,
+                "excerpts": {"max_chars_per_result": 1000},
+            },
+            timeout=30,
         )
-        
-        # Extract text from the response - handle both text blocks and tool results
-        result_text = ""
-        for block in response.content:
-            if hasattr(block, 'text'):
-                result_text += block.text + "\n"
-        
-        # If no text found, the model may need to continue with tool results
-        if not result_text.strip() and response.stop_reason == "tool_use":
-            # The model wants to use the web search tool - we need to let it complete
-            # For server-side tool use, the API handles this automatically
-            # But we should check if there's a tool_use block
-            for block in response.content:
-                if hasattr(block, 'type') and block.type == "tool_use":
-                    # Web search is being executed server-side
-                    pass
-        
-        return result_text.strip() if result_text else "No relevant news found."
-        
-    except anthropic.BadRequestError as e:
-        # Web search not enabled or invalid configuration
-        return f"Web search not available: Please enable web search in your Anthropic Console (https://console.anthropic.com/settings/organization/features). Error: {str(e)}"
-    except anthropic.APIError as e:
-        return f"Web search API error: {str(e)}"
+        response.raise_for_status()
+        data = response.json()
+
+        snippets = []
+        for result in data.get("results", [])[:max_results]:
+            title = (result.get("title") or "").strip()
+            excerpts = result.get("excerpts") or []
+            excerpt = excerpts[0].strip() if excerpts else ""
+            if excerpt and len(excerpt) > 800:
+                excerpt = excerpt[:800] + "..."
+            if title or excerpt:
+                snippets.append(f"{title}: {excerpt}".strip(": "))
+
+        return "\n\n".join(snippets) if snippets else "No relevant news found."
     except Exception as e:
         return f"Web search unavailable: {str(e)}"
 
@@ -887,7 +874,7 @@ From the notes, Slack discussions, call transcripts, web research, and deal info
 
 ### Step 3: Generate the Email
 
-**Email Structure (150-200 words MAX):**
+**Email Structure (80-120 words MAX):**
 1. **Subject Line**: Reference their specific problem or use case
 2. **Opening**: Brief context reconnection—ONE sentence referencing the specific problem or blocker
 3. **The "Now We Can" Moment**: This is the core. Explain what's changed:
@@ -918,9 +905,7 @@ Respond with JSON in this exact format:
         "similar_insights": "Relevant use cases or outcomes to reference"
     }},
     "subject": "Email subject line referencing their specific problem",
-    "body": "The email body (150-200 words max)",
-    "talking_points": ["Point to discuss if they respond", "How to handle likely objection"],
-    "flags": ["Any missing critical information or recommendations"]
+    "body": "The email body (80-120 words max)"
 }}
 """
 
@@ -953,9 +938,7 @@ Respond with JSON in this exact format:
                 "similar_insights": "None identified"
             },
             "subject": "Following up on our conversation",
-            "body": response_text,
-            "talking_points": [],
-            "flags": ["Failed to parse structured response"]
+            "body": response_text
         }
 
 
@@ -982,18 +965,10 @@ def format_digest_html(followups: list[dict]) -> str:
         .email-preview {{ background: white; border-radius: 8px; padding: 20px; margin-top: 15px; }}
         .email-subject {{ font-weight: 600; color: #333; margin-bottom: 10px; border-bottom: 1px solid #eee; padding-bottom: 10px; }}
         .email-body {{ white-space: pre-wrap; color: #444; }}
-        .talking-points {{ margin-top: 15px; padding-top: 15px; border-top: 1px dashed #ddd; }}
-        .talking-points h4 {{ margin: 0 0 10px 0; color: #666; font-size: 13px; text-transform: uppercase; }}
-        .talking-points ul {{ margin: 0; padding-left: 20px; }}
-        .talking-points li {{ color: #555; margin-bottom: 5px; }}
         .research-summary {{ background: #e8f4f8; border-radius: 8px; padding: 15px; margin: 15px 0; border-left: 3px solid #17a2b8; }}
         .research-summary h4 {{ margin: 0 0 10px 0; color: #17a2b8; font-size: 13px; text-transform: uppercase; }}
         .research-item {{ font-size: 13px; color: #555; margin-bottom: 8px; line-height: 1.5; }}
         .research-item strong {{ color: #333; }}
-        .flags {{ background: #fff3cd; border-radius: 8px; padding: 15px; margin: 15px 0; border-left: 3px solid #ffc107; }}
-        .flags h4 {{ margin: 0 0 10px 0; color: #856404; font-size: 13px; text-transform: uppercase; }}
-        .flags ul {{ margin: 0; padding-left: 20px; }}
-        .flags li {{ color: #856404; margin-bottom: 5px; font-size: 13px; }}
         .contact-info {{ font-size: 13px; color: #888; }}
         .footer {{ text-align: center; color: #999; font-size: 12px; margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; }}
         .no-followups {{ text-align: center; padding: 40px; color: #666; }}
@@ -1051,29 +1026,6 @@ def format_digest_html(followups: list[dict]) -> str:
                 </div>
 """
             
-            # Build flags HTML if any
-            flags_html = ""
-            flags = fu.get("flags", [])
-            if flags:
-                flag_items = "".join(f"<li>{f}</li>" for f in flags)
-                flags_html = f"""
-                <div class="flags">
-                    <h4>⚠️ Flags & Recommendations</h4>
-                    <ul>{flag_items}</ul>
-                </div>
-"""
-            
-            # Build talking points HTML
-            talking_points_html = ""
-            if fu.get("talking_points"):
-                points = "".join(f"<li>{p}</li>" for p in fu["talking_points"])
-                talking_points_html = f"""
-                <div class="talking-points">
-                    <h4>💡 Talking Points (if they respond)</h4>
-                    <ul>{points}</ul>
-                </div>
-"""
-            
             html += f"""
     <div class="deal-card">
         <div class="deal-header">
@@ -1085,11 +1037,9 @@ def format_digest_html(followups: list[dict]) -> str:
             {fu['company_name']} • Last contact: {fu['days_since_contact']} days ago
         </div>
         {research_html}
-        {flags_html}
         <div class="email-preview">
             <div class="email-subject">📝 Subject: {fu['email_subject']}</div>
             <div class="email-body">{fu['email_body']}</div>
-            {talking_points_html}
         </div>
     </div>
 """
@@ -1165,6 +1115,7 @@ def main():
     hubspot_token = os.getenv("HUBSPOT_ACCESS_TOKEN")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     sendgrid_key = os.getenv("SENDGRID_API_KEY")
+    parallel_key = os.getenv("PARALLEL_API_KEY", "")
     
     if not hubspot_token:
         raise ValueError("HUBSPOT_ACCESS_TOKEN environment variable is required")
@@ -1374,7 +1325,7 @@ def main():
         if company_name_for_search and company_name_for_search != "Unknown Company":
             print(f"   🌐 Searching web for {company_name_for_search}...")
             try:
-                web_research = search_company_news(claude, company_name_for_search)
+                web_research = search_company_news(company_name_for_search, parallel_key)
                 if web_research and "No relevant news" not in web_research:
                     print(f"   ✓ Found web intelligence")
                 else:
@@ -1431,15 +1382,8 @@ def main():
                 **deal_ctx,
                 "email_subject": email_content.get("subject", "Follow-up"),
                 "email_body": email_content.get("body", ""),
-                "talking_points": email_content.get("talking_points", []),
-                "research_summary": email_content.get("research_summary", {}),
-                "flags": email_content.get("flags", [])
+                "research_summary": email_content.get("research_summary", {})
             })
-            
-            # Print flags if any
-            flags = email_content.get("flags", [])
-            if flags:
-                print(f"   ⚠️ Flags: {', '.join(flags)}")
             
             print(f"   ✓ Generated: {email_content.get('subject', 'No subject')[:50]}...")
             

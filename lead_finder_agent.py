@@ -34,6 +34,7 @@ Optional Environment Variables:
     SLACK_BOT_TOKEN - Slack Bot OAuth token for searching internal discussions
     SLACK_CHANNELS - Comma-separated list of Slack channels to search
     FIREFLIES_API_KEY - Fireflies.ai API key for searching call transcripts
+    PARALLEL_API_KEY - Parallel.ai API key for company web intelligence search
     USE_HUBSPOT_SCORING - Use HubSpot lead_scoring_* properties (default: true); false = custom engagement score
     
 Contact Filtering (all optional):
@@ -118,6 +119,10 @@ SLACK_CHANNELS = [
 
 # Number of top leads to include in digest
 TOP_LEADS_COUNT = int(os.getenv("TOP_LEADS_COUNT", "10"))
+
+# Optional web search (Parallel.ai Search API)
+PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
+PARALLEL_SEARCH_HEADERS = {"parallel-beta": "search-extract-2025-10-10"}
 
 # Engagement scoring method: "hubspot" (use HubSpot lead_scoring_total) or "custom" (calculate custom score)
 USE_HUBSPOT_SCORING = os.getenv("USE_HUBSPOT_SCORING", "true").lower() == "true"
@@ -1078,6 +1083,52 @@ def format_previous_emails_context(emails: list[dict], max_body_chars: int = 400
     return "\n".join(lines).strip()
 
 
+def search_company_news(company_name: str, parallel_api_key: str, max_results: int = 3) -> str:
+    """Search company intelligence via Parallel.ai Search API."""
+    if not company_name or company_name == "Unknown Company":
+        return "No company name available for web search."
+    if not parallel_api_key:
+        return "Web search not configured (PARALLEL_API_KEY not set)."
+
+    objective = (
+        f'{company_name} AI initiatives leadership hires digital transformation '
+        f'technology partnerships funding acquisitions strategic priorities'
+    )
+
+    try:
+        response = requests.post(
+            PARALLEL_SEARCH_URL,
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": parallel_api_key,
+                **PARALLEL_SEARCH_HEADERS,
+            },
+            json={
+                "objective": objective,
+                "search_queries": [objective],
+                "max_results": max_results,
+                "excerpts": {"max_chars_per_result": 1000},
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        snippets = []
+        for result in data.get("results", [])[:max_results]:
+            title = (result.get("title") or "").strip()
+            excerpts = result.get("excerpts") or []
+            excerpt = excerpts[0].strip() if excerpts else ""
+            if excerpt and len(excerpt) > 800:
+                excerpt = excerpt[:800] + "..."
+            if title or excerpt:
+                snippets.append(f"{title}: {excerpt}".strip(": "))
+
+        return "\n\n".join(snippets) if snippets else "No relevant news found."
+    except Exception as e:
+        return f"Web search unavailable: {str(e)}"
+
+
 def generate_outreach_email(client: anthropic.Anthropic, lead_context: dict) -> dict:
     """Use Claude to generate a personalized outreach email for a lead."""
     
@@ -1114,6 +1165,9 @@ You are an AI sales assistant for Adopt AI, specializing in generating personali
 **Call Recording Transcripts (from Fireflies):**
 {lead_context.get('fireflies_context', 'No call transcripts available.')}
 
+**Recent Company News & Intelligence (from web search):**
+{lead_context.get('web_research', 'No web research available.')}
+
 **Recent Notes:**
 {lead_context.get('notes', 'No notes available.')}
 
@@ -1131,7 +1185,7 @@ The following content was retrieved from our knowledge base based on this lead's
 
 ### Step 1: Analyze the Context
 
-From the engagement signals, Apollo data, Slack discussions, call transcripts, and previous emails, identify:
+From the engagement signals, Apollo data, Slack discussions, call transcripts, web research, and previous emails, identify:
 1. **Interest Indicators**: What has this lead engaged with? What are they interested in?
 2. **Company Context**: What does Apollo tell us about their company, tech stack, or hiring signals?
 3. **Internal Intelligence**: What do we know from Slack or previous calls?
@@ -1527,6 +1581,7 @@ def main():
     hubspot_token = os.getenv("HUBSPOT_ACCESS_TOKEN")
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     sendgrid_key = os.getenv("SENDGRID_API_KEY")
+    parallel_key = os.getenv("PARALLEL_API_KEY", "")
     
     if not hubspot_token:
         raise ValueError("HUBSPOT_ACCESS_TOKEN environment variable is required")
@@ -1954,6 +2009,21 @@ def main():
             fireflies_context = "No company name or domain available for Fireflies search."
         
         lead["fireflies_context"] = fireflies_context
+
+        # Web search context
+        web_research = "Web search not performed."
+        if company_name and company_name != "Unknown Company":
+            print(f"      🌐 Searching web for {company_name}...")
+            web_research = search_company_news(company_name, parallel_key)
+            if web_research and "No relevant news" not in web_research:
+                print("      ✓ Found web intelligence")
+            elif "not configured" in web_research:
+                print("      ℹ️ Web search skipped (no PARALLEL_API_KEY)")
+            else:
+                print("      ℹ️ No relevant web news found")
+        else:
+            print("      ℹ️ Web search skipped (no company name)")
+        lead["web_research"] = web_research
         
         # Get notes
         notes = hubspot.get_contact_notes(contact_id)
