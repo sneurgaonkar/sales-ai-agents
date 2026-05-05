@@ -12,7 +12,7 @@ Workflow:
 3. Apply configurable filters (employee size, industry, country, job title, lifecycle stage)
 4. Score contacts by engagement (HubSpot lead scoring or custom: email opens/clicks, page views, etc.)
 5. Filter for stale contacts (no activity in STALE_THRESHOLD_DAYS; optional)
-6. Rank and select top N leads (N = TOP_LEADS_COUNT), split between assigned recipients (e.g. 10 → 5 each)
+6. Rank and select top N leads (N = 20), split between assigned recipients (10 each)
 7. Enrich with context from Apollo, Slack, and Fireflies, and knowledge base (RAG)
 8. Generate personalized outreach emails using Claude
 9. Generate LinkedIn connection notes (max 300 characters) for each lead using Claude
@@ -29,7 +29,7 @@ Environment Variables Required:
     FROM_EMAIL - Sender email address for the digest
 
 Optional Environment Variables:
-    TOP_LEADS_COUNT - Total number of top leads to process (default: 10). Split evenly between recipients.
+    TOP_LEADS_COUNT - Total number of top leads to process (default: 20 for 10 each)
     APOLLO_API_KEY - Apollo.io API key for contact/company enrichment
     SLACK_BOT_TOKEN - Slack Bot OAuth token for searching internal discussions
     SLACK_CHANNELS - Comma-separated list of Slack channels to search
@@ -117,8 +117,15 @@ SLACK_CHANNELS = [
     if channel.strip()
 ]
 
+# Fixed assignee routing
+ASSIGNEES = [
+    {"id": "ritu", "email": "ritu@adopt.ai"},
+    {"id": "sravan", "email": "sravan@adopt.ai"},
+]
+LEADS_PER_ASSIGNEE = int(os.getenv("LEADS_PER_ASSIGNEE", "10"))
+
 # Number of top leads to include in digest
-TOP_LEADS_COUNT = int(os.getenv("TOP_LEADS_COUNT", "10"))
+TOP_LEADS_COUNT = int(os.getenv("TOP_LEADS_COUNT", str(len(ASSIGNEES) * LEADS_PER_ASSIGNEE)))
 
 # Optional web search (Parallel.ai Search API)
 PARALLEL_SEARCH_URL = "https://api.parallel.ai/v1beta/search"
@@ -1305,16 +1312,11 @@ Respond with JSON only:
         return ""
 
 
-def format_lead_digest_html(deepak_leads: list[dict], marshal_leads: list[dict]) -> str:
-    """Format leads into an HTML digest email with two sections (one for each person).
-    
-    Args:
-        deepak_leads: List of leads for deepak@adopt.ai
-        marshal_leads: List of leads for marshal@adopt.ai
-    """
+def format_lead_digest_html(ritu_leads: list[dict], sravan_leads: list[dict]) -> str:
+    """Format leads into an HTML digest email with two sections (one for each person)."""
     
     date_str = datetime.now().strftime("%B %d, %Y at %I:%M %p")
-    total_count = len(deepak_leads) + len(marshal_leads)
+    total_count = len(ritu_leads) + len(sravan_leads)
     
     def format_lead_card(lead: dict, index: int) -> str:
         """Format a single lead card."""
@@ -1490,51 +1492,51 @@ def format_lead_digest_html(deepak_leads: list[dict], marshal_leads: list[dict])
                 <div class="stat-label">Total Leads</div>
             </div>
             <div class="stat">
-                <div class="stat-value">{len(deepak_leads)}</div>
-                <div class="stat-label">Deepak's Leads</div>
+                <div class="stat-value">{len(ritu_leads)}</div>
+                <div class="stat-label">Ritu's Leads</div>
             </div>
             <div class="stat">
-                <div class="stat-value">{len(marshal_leads)}</div>
-                <div class="stat-label">Marshal's Leads</div>
+                <div class="stat-value">{len(sravan_leads)}</div>
+                <div class="stat-label">Sravan's Leads</div>
             </div>
         </div>
     </div>
 """
     
-    # Deepak's section
+    # Ritu's section
     html += f"""
     <div class="section-header">
-        <h2>👤 Leads for Deepak (deepak@adopt.ai)</h2>
-        <p>{len(deepak_leads)} leads assigned</p>
+        <h2>👤 Leads for Ritu (ritu@adopt.ai)</h2>
+        <p>{len(ritu_leads)} leads assigned</p>
     </div>
 """
     
-    if not deepak_leads:
+    if not ritu_leads:
         html += """
     <div class="no-leads">
-        <p>No leads assigned to Deepak.</p>
+        <p>No leads assigned to Ritu.</p>
     </div>
 """
     else:
-        for i, lead in enumerate(deepak_leads, 1):
+        for i, lead in enumerate(ritu_leads, 1):
             html += format_lead_card(lead, i)
     
-    # Marshal's section
+    # Sravan's section
     html += f"""
     <div class="section-header">
-        <h2>👤 Leads for Marshal (marshal@adopt.ai)</h2>
-        <p>{len(marshal_leads)} leads assigned</p>
+        <h2>👤 Leads for Sravan (sravan@adopt.ai)</h2>
+        <p>{len(sravan_leads)} leads assigned</p>
     </div>
 """
     
-    if not marshal_leads:
+    if not sravan_leads:
         html += """
     <div class="no-leads">
-        <p>No leads assigned to Marshal.</p>
+        <p>No leads assigned to Sravan.</p>
     </div>
 """
     else:
-        for i, lead in enumerate(marshal_leads, 1):
+        for i, lead in enumerate(sravan_leads, 1):
             html += format_lead_card(lead, i)
     
     html += """
@@ -1890,21 +1892,21 @@ def main():
         threshold = props.get("lead_scoring_threshold", "N/A")
         print(f"   {i}. {lead['contact_name']} ({lead['company_name']}) - Threshold: {threshold}")
     
-    # Split leads into two groups: TOP_LEADS_COUNT // 2 for deepak, remaining for marshal
-    # Mark each lead with assignment
-    deepak_count = TOP_LEADS_COUNT // 2
+    # Split leads into Ritu and Sravan buckets (10 each by default)
+    ritu_count = LEADS_PER_ASSIGNEE
+    sravan_count = LEADS_PER_ASSIGNEE
     for i, lead in enumerate(qualified_leads):
-        if i < deepak_count:
-            lead["assigned_to"] = "deepak"
+        if i < ritu_count:
+            lead["assigned_to"] = "ritu"
         else:
-            lead["assigned_to"] = "marshal"
-    
-    deepak_leads = [lead for lead in qualified_leads[:deepak_count]]
-    marshal_leads = [lead for lead in qualified_leads[deepak_count:TOP_LEADS_COUNT]]
-    
+            lead["assigned_to"] = "sravan"
+
+    ritu_leads = [lead for lead in qualified_leads[:ritu_count]]
+    sravan_leads = [lead for lead in qualified_leads[ritu_count:ritu_count + sravan_count]]
+
     print(f"\n📊 Lead Assignment:")
-    print(f"   Deepak: {len(deepak_leads)} leads")
-    print(f"   Marshal: {len(marshal_leads)} leads")
+    print(f"   Ritu: {len(ritu_leads)} leads")
+    print(f"   Sravan: {len(sravan_leads)} leads")
     
     # Step 4: Enrich leads with context and generate emails
     print(f"\n✍️ Enriching leads and generating emails...")
@@ -2089,14 +2091,14 @@ def main():
         
         final_leads.append(lead)
     
-    # Re-split final leads into deepak and marshal groups using assignment marker
-    deepak_final = [lead for lead in final_leads if lead.get("assigned_to") == "deepak"]
-    marshal_final = [lead for lead in final_leads if lead.get("assigned_to") == "marshal"]
+    # Re-split final leads into Ritu and Sravan groups using assignment marker
+    ritu_final = [lead for lead in final_leads if lead.get("assigned_to") == "ritu"]
+    sravan_final = [lead for lead in final_leads if lead.get("assigned_to") == "sravan"]
     
     # Step 5: Create and send digest
     print(f"\n📧 Creating digest email...")
     
-    html_digest = format_lead_digest_html(deepak_final, marshal_final)
+    html_digest = format_lead_digest_html(ritu_final, sravan_final)
     
     # Send the email
     if sendgrid_key:
@@ -2106,7 +2108,7 @@ def main():
     
     # Only after digest is built and sent: add this run's leads to the processed log.
     # Who gets added: exactly the TOP_LEADS_COUNT leads we processed (top N by priority, same
-    # order as final_leads: first half assigned to deepak, second half to marshal). The log
+    # order as final_leads: first half assigned to ritu, second half to sravan). The log
     # stores contact_ids and emails in sets, so order in the JSON file is arbitrary (not "top 10"
     # then "bottom 10"). If the run had failed before this point, we would not have saved them.
     print(f"\n📝 Updating processed contacts log...")
@@ -2126,10 +2128,10 @@ def main():
     print(f"   Already processed (skipped): {skipped_count}")
     print(f"   Leads processed: {len(qualified_leads)}")
     print(f"   Emails generated: {len(final_leads)}")
-    print(f"   Deepak's leads: {len(deepak_final)}")
-    print(f"   Marshal's leads: {len(marshal_final)}")
+    print(f"   Ritu's leads: {len(ritu_final)}")
+    print(f"   Sravan's leads: {len(sravan_final)}")
     
-    return {"deepak": deepak_final, "marshal": marshal_final, "all": final_leads}
+    return {"ritu": ritu_final, "sravan": sravan_final, "all": final_leads}
 
 
 if __name__ == "__main__":
